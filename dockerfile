@@ -16,11 +16,11 @@ COPY requirements.txt .
 # ติดตั้ง dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# คัดลอกโฟลเดอร์ app ทั้งหมดไปยัง /app ใน container
-COPY app /app
+# คัดลอกโฟลเดอร์ทั้งหมดใน directory host ไปยัง /app ใน container
+COPY . /app
 
 # เปิดพอร์ต 8000 สำหรับ FastAPI
 EXPOSE 8000
 
 # รัน FastAPI เมื่อ container เริ่มทำงาน
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
