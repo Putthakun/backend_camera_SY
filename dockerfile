@@ -1,26 +1,36 @@
-# ใช้ base image ของ Python
+# Use a base image with Python
 FROM python:3.9-slim
 
-# ติดตั้ง dependencies ที่จำเป็น เช่น cmake และ build-essential
+# Install the necessary dependencies including OpenGL and X11 libraries
 RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libx11-dev \
+    libxext-dev \
+    libxrender-dev \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libfontconfig1 \
+    libice6 \
     cmake \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
-# กำหนด working directory
+# Set the working directory
 WORKDIR /app
 
-# คัดลอก requirements.txt ไปยัง container
+# Copy the requirements file into the container
 COPY requirements.txt .
 
-# ติดตั้ง dependencies
+# Install dependencies listed in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# คัดลอกโฟลเดอร์ทั้งหมดใน directory host ไปยัง /app ใน container
+# Copy the application code into the container
 COPY . /app
 
-# เปิดพอร์ต 8000 สำหรับ FastAPI
+# Expose port 8000 for FastAPI
 EXPOSE 8000
 
-# รัน FastAPI เมื่อ container เริ่มทำงาน
+# Run the FastAPI application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

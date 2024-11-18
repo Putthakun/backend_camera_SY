@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-dlib
 numpy
 pillow
 opencv-python
+insightface
+onnxruntime

@@ -11,3 +11,5 @@ services:
     devices:
       - "/dev/video0:/dev/video0"
     restart: always
+    environment:
+      - PYTHONUNBUFFERED=1  # ให้เห็น log แบบ real-time

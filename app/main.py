@@ -1,51 +1,52 @@
 import cv2
-import dlib
-from fastapi import FastAPI, Response
+import insightface
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from io import BytesIO
 
-# เริ่มต้น FastAPI app
 app = FastAPI()
 
-# โหลดโมเดลสำหรับตรวจจับใบหน้า
-detector = dlib.get_frontal_face_detector()
+# โหลด InsightFace Model
+model = insightface.app.FaceAnalysis()  # โมเดล InsightFace สำหรับ Face Detection และ Embedding
+model.prepare(ctx_id=0)  # ใช้ CPU (ctx_id=0) หรือ GPU (ctx_id=1)
 
 # เปิดกล้องเว็บแคม
 cap = cv2.VideoCapture(0)
 
-def detect_faces(frame):
-    # แปลงภาพเป็นสีเทา (grayscale)
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    # ตรวจจับใบหน้า
-    faces = detector(gray)
-    
-    # วาดกรอบรอบใบหน้า
+def detect_and_embed_faces(frame):
+    # ตรวจจับใบหน้าในเฟรม
+    faces = model.get(frame)  # ใช้ InsightFace สำหรับการตรวจจับ
+
     for face in faces:
-        x, y, w, h = (face.left(), face.top(), face.width(), face.height())
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    
+        # ดึงพิกัดใบหน้า
+        bbox = face.bbox.astype(int)  # แปลงพิกัดเป็นจำนวนเต็ม
+        x1, y1, x2, y2 = bbox
+
+        # วาดกรอบรอบใบหน้า
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # สร้าง Face Embedding
+        embedding = face.embedding
+        print(f"Face Embedding: {embedding[:5]}... (dim: {len(embedding)})")  # แสดงตัวอย่าง Embedding
+
     return frame
 
 def gen_frames():
     while True:
-        # อ่านภาพจากกล้อง
         ret, frame = cap.read()
         if not ret:
             break
-        
-        # ตรวจจับใบหน้าในภาพ
-        frame = detect_faces(frame)
-        
-        # แปลงภาพเป็น JPEG
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        
-        # ส่งภาพในรูปแบบ bytes
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-# สร้าง route สำหรับการแสดงผลภาพ real-time
+        # ทำการ mirror ภาพ
+        frame = cv2.flip(frame, 1)
+
+        # ตรวจจับใบหน้าและสร้าง Embedding
+        frame = detect_and_embed_faces(frame)
+
+        # เข้ารหัสภาพเป็น JPEG
+        _, buffer = cv2.imencode('.jpg', frame)
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
 @app.get("/video_feed")
 async def video_feed():
     return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
