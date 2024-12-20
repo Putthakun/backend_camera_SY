@@ -5,3 +5,5 @@ pillow
 opencv-python
 insightface
 onnxruntime
+redis
+python-multipart
