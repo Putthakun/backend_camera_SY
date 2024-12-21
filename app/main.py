@@ -1,14 +1,15 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from redis_client import redis_client
+from datetime import datetime
+from pydantic import BaseModel
+from scipy.spatial.distance import cosine
 
 import cv2
 import insightface
 import numpy as np
-from scipy.spatial.distance import cosine
 import json
 import requests
-from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -104,6 +105,26 @@ async def fetch_employee_vectors():
     return {"message": "Employee vectors retrieved successfully", "data": vectors_data}
 
 
+def send_transaction_to_web_server(emp_id, camera_id):
+    timestamp = datetime.now().isoformat()  # ใช้เวลาปัจจุบันในรูปแบบ ISO 8601
+    payload = {
+        "emp_id": emp_id,
+        "camera_id": camera_id,
+        "timestamp": timestamp
+    }
+    
+    try:
+        # ส่งข้อมูลไปยัง web server API
+        response = requests.post("http://web_server:8001/api/record-transaction", json=payload)
+        
+        if response.status_code == 200:
+            print("Transaction recorded successfully")
+        else:
+            print(f"Failed to record transaction: {response.text}")
+    except Exception as e:
+        print(f"Error sending data to web server: {e}")
+
+
 @app.post("/api/match-face-vector")
 async def match_face_vector(request: MatchFaceRequest):
     new_vector = request.new_vector  # ใช้ข้อมูลที่รับจาก body
@@ -130,11 +151,6 @@ async def match_face_vector(request: MatchFaceRequest):
         employee_id = item['employee_id']  # ใช้ 'employee_id' จาก dictionary
         stored_vector = item['vector']  # ใช้ 'vector' จาก dictionary
 
-        # แสดงค่าของ stored_vector เพื่อ debug
-        print(f"Stored vector for employee {employee_id}: {stored_vector[:5]}... (dim: {len(stored_vector)})")
-
-        print(f"Comparing new vector: {new_vector[:5]}... with stored vector: {stored_vector[:5]}...")
-
         # คำนวณ distance ระหว่างเวกเตอร์ใหม่กับเวกเตอร์ที่เก็บใน Redis
         distance = cosine(new_vector, stored_vector)
 
@@ -147,29 +163,30 @@ async def match_face_vector(request: MatchFaceRequest):
     if min_distance > threshold:
         raise HTTPException(status_code=404, detail="No matching face found")
 
-    send_transaction_to_web_server(matched_employee, camera_id)
+    # ตรวจสอบว่าเราเคยจับคู่ในช่วงเวลา 10 วินาทีหรือไม่
+    last_match_time = redis_client.get(f"last_match_{matched_employee}")
+
+    if last_match_time:
+        last_match_timestamp = datetime.fromisoformat(last_match_time)
+        time_diff = datetime.now() - last_match_timestamp
+
+        if time_diff.total_seconds() < 10:
+            # ถ้าจับคู่ใบหน้าซ้ำในช่วงเวลา 10 วินาที, ไม่ต้องสร้าง transaction ใหม่
+            print(f"Duplicate match within {time_diff.total_seconds()} seconds. Skipping transaction.")
+            return {
+                "message": "Duplicate match within 10 seconds. Skipping transaction.",
+                "employee_id": matched_employee,
+                "similarity_score": 1 - min_distance
+            }
+
+    # ส่งข้อมูลการทำธุรกรรมไปยัง web server
+    send_transaction_to_web_server(matched_employee, 1)
+
+    # อัพเดทเวลาล่าสุดที่จับคู่
+    redis_client.set(f"last_match_{matched_employee}", datetime.now().isoformat())
 
     return {
         "message": "Matching employee found",
         "employee_id": matched_employee,
         "similarity_score": 1 - min_distance  # แปลงเป็นค่าความคล้ายคลึง
     }
-
-def send_transaction_to_web_server(emp_id, camera_id):
-    timestamp = datetime.now().isoformat()  # ใช้เวลาปัจจุบันในรูปแบบ ISO 8601
-    payload = {
-        "emp_id": emp_id,
-        "camera_id": camera_id,
-        "timestamp": timestamp
-    }
-    
-    try:
-        # ส่งข้อมูลไปยัง web server API
-        response = requests.post("http://your_web_server_address/api/record-transaction", json=payload)
-        
-        if response.status_code == 200:
-            print("Transaction recorded successfully")
-        else:
-            print(f"Failed to record transaction: {response.text}")
-    except Exception as e:
-        print(f"Error sending data to web server: {e}")
