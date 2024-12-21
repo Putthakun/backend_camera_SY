@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from redis_client import redis_client
 from datetime import datetime
@@ -10,6 +10,8 @@ import insightface
 import numpy as np
 import json
 import requests
+from models import *
+import time
 
 app = FastAPI()
 
@@ -20,58 +22,43 @@ model.prepare(ctx_id=0)  # ใช้ CPU (ctx_id=0) หรือ GPU (ctx_id=1)
 # เปิดกล้องเว็บแคม
 cap = cv2.VideoCapture(0)
 
-# Pydantic model สำหรับรับข้อมูลจาก body
-class MatchFaceRequest(BaseModel):
-    new_vector: list  # รับข้อมูล new_vector เป็น list จาก body
+# ตัวแปรสำหรับเช็คว่า vector พร้อมหรือไม่
+data_ready = False
 
 def detect_and_embed_faces(frame):
-    # ตรวจจับใบหน้าในเฟรม
     faces = model.get(frame)
     embeddings = []
 
     for face in faces:
-        # ดึงพิกัดใบหน้า
         bbox = face.bbox.astype(int)
         x1, y1, x2, y2 = bbox
-
-        # วาดกรอบรอบใบหน้า
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        # สร้าง Face Embedding
         embedding = face.embedding
         embeddings.append(embedding)
-
         print(f"Face Embedding: {embedding[:5]}... (dim: {len(embedding)})")
 
     return frame, embeddings
 
+# ฟังก์ชันสำหรับส่งภาพที่ได้จากกล้อง
 def gen_frames():
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # ทำการ mirror ภาพ
         frame = cv2.flip(frame, 1)
-
-        # ตรวจจับใบหน้าและสร้าง Embedding
         frame, embeddings = detect_and_embed_faces(frame)
 
-        print(f"type: {type(embeddings)}, length: {len(embeddings)}")
-        
-        # ส่ง embedding ไปยัง API สำหรับการจับคู่
         for embedding in embeddings:
             response = requests.post(
                 "http://localhost:8000/api/match-face-vector",
-                json={"new_vector": embedding.tolist()}  # ส่งข้อมูลใน body
+                json={"new_vector": embedding.tolist()}  
             )
-
             if response.status_code == 200:
                 print(response.json())
             else:
                 print(response.text)
 
-        # เข้ารหัสภาพเป็น JPEG
         _, buffer = cv2.imencode('.jpg', frame)
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
@@ -80,29 +67,26 @@ def gen_frames():
 async def video_feed():
     return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-@app.get("/api/fetch-face-vectors-redis")
-async def fetch_employee_vectors():
-    # ดึงข้อมูล employee_vectors จาก Redis
-    employee_vectors = redis_client.get("employee_vectors")
+@app.on_event("startup")
+async def fetch_and_cache_vectors_on_startup():
+    retry_attempts = 5  # จำนวนครั้งที่ backend camera จะพยายามดึงข้อมูล
+    for attempt in range(retry_attempts):
+        employee_vectors = redis_client.get("employee_vectors")
+        
+        if employee_vectors:
+            vectors_data = json.loads(employee_vectors)
+            print("Employee vectors retrieved successfully during startup.")
+            return  # ถ้าสำเร็จ ก็จะทำการส่งข้อมูลหรือหยุดการทำงาน
+        else:
+            print(f"Attempt {attempt + 1}: No data found in Redis, retrying...")
+        
+        # ถ้ายังไม่ได้ข้อมูล จะรอ 2 วินาทีและลองใหม่
+        time.sleep(2)
     
-    if not employee_vectors:
-        raise HTTPException(status_code=404, detail="No employee vectors found in Redis")
-
-    # แปลงข้อมูลจาก JSON เป็น Python dictionary
-    vectors_data = json.loads(employee_vectors)
-    
-    # พิมพ์ข้อมูลออกมาเพื่อทำการ debug
-    print(f"vectors_data: {vectors_data}")  # แสดงข้อมูลที่ได้จาก Redis
-    print(f"Data Type: {type(vectors_data)}")
-    print(f"Length: {len(vectors_data)}")
-
-    # ตรวจสอบชนิดของข้อมูลในแต่ละรายการ
-    for i, item in enumerate(vectors_data):
-        print(f"Item {i}: {item}")
-        print(f"  Type: {type(item)}")
-        print(f"  Keys: {item.keys() if isinstance(item, dict) else 'N/A'}")
-
-    return {"message": "Employee vectors retrieved successfully", "data": vectors_data}
+    # ถ้าหลังจากพยายามครบแล้ว ยังไม่ได้ข้อมูล
+    print("Failed to retrieve employee vectors after retries.")
+    # แจ้งเตือนเมื่อไม่สามารถดึงข้อมูลจาก Redis ได้
+    raise HTTPException(status_code=404, detail="No employee vectors found in Redis after retrying")
 
 
 def send_transaction_to_web_server(emp_id, camera_id):
@@ -124,7 +108,6 @@ def send_transaction_to_web_server(emp_id, camera_id):
     except Exception as e:
         print(f"Error sending data to web server: {e}")
 
-
 @app.post("/api/match-face-vector")
 async def match_face_vector(request: MatchFaceRequest):
     new_vector = request.new_vector  # ใช้ข้อมูลที่รับจาก body
@@ -142,7 +125,7 @@ async def match_face_vector(request: MatchFaceRequest):
     vectors_data = json.loads(employee_vectors)
 
     # กำหนด threshold สำหรับการจับคู่ (เช่น 0.3)
-    threshold = 0.9  # ลดค่า threshold
+    threshold = 0.7  # ลดค่า threshold
     matched_employee = None
     min_distance = float('inf')
 

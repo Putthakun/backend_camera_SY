@@ -7,3 +7,6 @@ class VectorData(BaseModel):
 
 class ReceiveVectorsRequest(BaseModel):
     vectors: List[VectorData]
+
+class MatchFaceRequest(BaseModel):
+    new_vector: list  # รับข้อมูล new_vector เป็น list จาก body
